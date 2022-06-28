@@ -92,13 +92,16 @@ def test_async_scheduler(scheduler, searcher, mode):
     tuner.run()
 
 
-_sync_parameterizations = list(
-    itertools.product(
-        ["hb", "dehb"],
-        ["random", "bayesopt"],
-        ["min", "max"],
-    )
-)
+_sync_parameterizations = [
+    ["hb", "random", "min"],
+    ["hb", "random", "max"],
+    ["hb", "bayesopt", "min"],
+    ["hb", "bayesopt", "max"],
+    ["dehb", "random", "min"],
+    ["dehb", "random_encoded", "max"],
+    ["dehb", "random", "min"],
+    ["dehb", "random_encoded", "max"],
+]
 
 
 @pytest.mark.parametrize("scheduler, searcher, mode", _sync_parameterizations)

@@ -59,7 +59,7 @@ _ARGUMENT_KEYS = {
 }
 
 _DEFAULT_OPTIONS = {
-    "searcher": "random",
+    "searcher": "random_encoded",
     "mode": "min",
     "resource_attr": "epoch",
     "mutation_factor": 0.5,
@@ -149,8 +149,10 @@ class DifferentialEvolutionHyperbandScheduler(ResourceLevelsScheduler):
         number is used (i.e., `len(rungs_first_bracket)`)
     searcher : str
         Selects searcher. Passed to `searcher_factory`.
-        NOTE: Different to :class:`FIFOScheduler`, we do not accept a
-        `BaseSearcher` object here.
+        If searcher == "random_encoded", the encoded configs are
+        sampled directly, each entry independent from U([0, 1]).
+        This distribution has higher entropy than for "random" if
+        there are discrete hyperparameters in `config_space`.
     search_options : dict
         Passed to `searcher_factory`
     metric : str
@@ -230,33 +232,36 @@ class DifferentialEvolutionHyperbandScheduler(ResourceLevelsScheduler):
         assert isinstance(
             searcher, str
         ), f"searcher must be of type string, but has type {type(searcher)}"
-        search_options = kwargs.get("search_options")
-        if search_options is None:
-            search_options = dict()
+        if searcher == "random_encoded":
+            self.searcher = None
         else:
-            search_options = search_options.copy()
-        search_options.update(
-            {
-                "config_space": self.config_space.copy(),
-                "metric": self.metric,
-                "points_to_evaluate": kwargs.get("points_to_evaluate"),
-                "scheduler_mode": kwargs["mode"],
-                "random_seed_generator": self.random_seed_generator,
-                "resource_attr": self._resource_attr,
-                "scheduler": "hyperband_synchronous",
-            }
-        )
-        if searcher == "bayesopt":
-            # We need `max_epochs` in this case
-            max_epochs = self._infer_max_resource_level(
-                max_resource_level=None, max_resource_attr=self.max_resource_attr
+            search_options = kwargs.get("search_options")
+            if search_options is None:
+                search_options = dict()
+            else:
+                search_options = search_options.copy()
+            search_options.update(
+                {
+                    "config_space": self.config_space.copy(),
+                    "metric": self.metric,
+                    "points_to_evaluate": kwargs.get("points_to_evaluate"),
+                    "scheduler_mode": kwargs["mode"],
+                    "random_seed_generator": self.random_seed_generator,
+                    "resource_attr": self._resource_attr,
+                    "scheduler": "hyperband_synchronous",
+                }
             )
-            assert max_epochs is not None, (
-                "If searcher='bayesopt', need to know the maximum resource "
-                + "level. Please provide max_resource_attr argument."
-            )
-            search_options["max_epochs"] = max_epochs
-        self.searcher: BaseSearcher = searcher_factory(searcher, **search_options)
+            if searcher == "bayesopt":
+                # We need `max_epochs` in this case
+                max_epochs = self._infer_max_resource_level(
+                    max_resource_level=None, max_resource_attr=self.max_resource_attr
+                )
+                assert max_epochs is not None, (
+                    "If searcher='bayesopt', need to know the maximum resource "
+                    + "level. Please provide max_resource_attr argument."
+                )
+                search_options["max_epochs"] = max_epochs
+            self.searcher: BaseSearcher = searcher_factory(searcher, **search_options)
         # Bracket manager
         self.bracket_manager = DifferentialEvolutionHyperbandBracketManager(
             rungs_first_bracket=rungs_first_bracket,
@@ -282,7 +287,7 @@ class DifferentialEvolutionHyperbandScheduler(ResourceLevelsScheduler):
         self._global_parent_pool = {level: [] for _, level in rungs_first_bracket}
 
     def _suggest(self, trial_id: int) -> Optional[TrialSuggestion]:
-        do_debug_log = self.searcher.debug_log is not None
+        do_debug_log = self.searcher is not None and self.searcher.debug_log is not None
         if do_debug_log and trial_id == 0:
             # This is printed at the start of the experiment. Cannot do this
             # at construction, because with `RemoteLauncher` this does not end
@@ -309,7 +314,7 @@ class DifferentialEvolutionHyperbandScheduler(ResourceLevelsScheduler):
                 trial_id, ext_slot
             )
         if encoded_config is not None:
-            suggestion = self._register_new_config_as_pending(
+            suggestion = self._register_new_config_and_make_suggestion(
                 trial_id=trial_id, ext_slot=ext_slot, encoded_config=encoded_config
             )
             if do_debug_log:
@@ -330,36 +335,46 @@ class DifferentialEvolutionHyperbandScheduler(ResourceLevelsScheduler):
         return suggestion
 
     def _encoded_config_from_searcher(self, trial_id: int) -> np.ndarray:
-        config = self.searcher.get_config(trial_id=str(trial_id))
-        if config is not None:
-            encoded_config = self._hp_ranges.to_ndarray(config)
+        if self.searcher is not None:
+            config = self.searcher.get_config(trial_id=str(trial_id))
+            if config is not None:
+                encoded_config = self._hp_ranges.to_ndarray(config)
+            else:
+                encoded_config = None
         else:
-            encoded_config = None
+            encoded_config = self.random_state.uniform(
+                low=0, high=1, size=self._hp_ranges.ndarray_size
+            )
         return encoded_config
 
     def _encoded_config_by_promotion(self, ext_slot: ExtendedSlotInRung) -> np.ndarray:
         parent_trial_id = self.bracket_manager.top_of_previous_rung(
             bracket_id=ext_slot.bracket_id, pos=ext_slot.slot_index
         )
-        return self._trial_info[parent_trial_id].encoded_config
+        trial_info = self._trial_info[parent_trial_id]
+        assert trial_info.metric_val is not None  # Sanity check
+        return trial_info.encoded_config
 
     def _extended_config_by_mutation_crossover(
         self, trial_id: int, ext_slot: ExtendedSlotInRung
     ) -> np.ndarray:
         assert trial_id > ext_slot.trial_id  # Sanity check
         ext_slot.do_selection = True
-        target_trial_id = self.bracket_manager.trial_id_from_parent_slot(
-            bracket_id=ext_slot.bracket_id,
-            level=ext_slot.level,
-            slot_index=ext_slot.slot_index,
-        )
         mutant = self._mutation(ext_slot)
+        target_trial_id = self._get_target_trial_id(ext_slot)
         return self._crossover(
             mutant=mutant,
             target=self._trial_info[target_trial_id].encoded_config,
         )
 
-    def _register_new_config_as_pending(
+    def _get_target_trial_id(self, ext_slot: ExtendedSlotInRung) -> int:
+        return self.bracket_manager.trial_id_from_parent_slot(
+            bracket_id=ext_slot.bracket_id,
+            level=ext_slot.level,
+            slot_index=ext_slot.slot_index,
+        )
+
+    def _register_new_config_and_make_suggestion(
         self, trial_id: int, ext_slot: ExtendedSlotInRung, encoded_config: np.ndarray
     ) -> TrialSuggestion:
         # Register as pending
@@ -388,7 +403,6 @@ class DifferentialEvolutionHyperbandScheduler(ResourceLevelsScheduler):
         trial_id = trial.trial_id
         if trial_id in self._trial_to_pending_slot:
             ext_slot = self._trial_to_pending_slot[trial_id]
-            bracket_id = ext_slot.bracket_id
             milestone = ext_slot.level
             metric_val, resource = self._extract_from_result(trial_id, result)
             trial_decision = SchedulerDecision.CONTINUE
@@ -402,12 +416,9 @@ class DifferentialEvolutionHyperbandScheduler(ResourceLevelsScheduler):
                 # Selection
                 winner_trial_id = self._selection(trial_id, ext_slot, metric_val)
                 # Return updated slot information to bracket
-                ext_slot.trial_id = winner_trial_id
-                ext_slot.metric_val = self._trial_info[winner_trial_id].metric_val
-                slot_in_rung = ext_slot.slot_in_rung()
-                self.bracket_manager.on_result((bracket_id, slot_in_rung))
+                self._return_slot_result_to_bracket(winner_trial_id, ext_slot)
                 trial_decision = SchedulerDecision.STOP
-                if call_searcher:
+                if call_searcher and self.searcher is not None:
                     config = self._hp_ranges.from_ndarray(
                         self._trial_info[trial_id].encoded_config
                     )
@@ -427,17 +438,13 @@ class DifferentialEvolutionHyperbandScheduler(ResourceLevelsScheduler):
         return trial_decision
 
     def _extract_from_result(self, trial_id: int, result: dict) -> (float, int):
-        assert self.metric in result, (
-            f"Result for trial_id {trial_id} does not contain "
-            + f"'{self.metric}' field"
-        )
-        metric_val = float(result[self.metric])
-        assert self._resource_attr in result, (
-            f"Result for trial_id {trial_id} does not contain "
-            + f"'{self._resource_attr}' field"
-        )
-        resource = int(result[self._resource_attr])
-        return metric_val, resource
+        metric_vals = []
+        for name in (self.metric, self._resource_attr):
+            assert name in result, (
+                f"Result for trial_id {trial_id} does not contain " + f"'{name}' field"
+            )
+            metric_vals.append(result[name])
+        return float(metric_vals[0]), int(metric_vals[1])
 
     def _record_new_metric_value(
         self, trial_id: int, milestone: int, metric_val: float
@@ -449,10 +456,22 @@ class DifferentialEvolutionHyperbandScheduler(ResourceLevelsScheduler):
         # Update global parent pool
         self._global_parent_pool[milestone].append(trial_id)
 
+    def _return_slot_result_to_bracket(
+        self, winner_trial_id: int, ext_slot: ExtendedSlotInRung
+    ):
+        ext_slot.trial_id = winner_trial_id
+        ext_slot.metric_val = self._trial_info[winner_trial_id].metric_val
+        slot_in_rung = ext_slot.slot_in_rung()
+        self.bracket_manager.on_result((ext_slot.bracket_id, slot_in_rung))
+
     def _mutation(self, ext_slot: ExtendedSlotInRung) -> np.ndarray:
         bracket_id = ext_slot.bracket_id
         level = ext_slot.level
         assert bracket_id > 0
+        # Determine the parent pool, from which the 3 parents are sampled. If
+        # this is too small (< 3), we also use the global parent pool for this
+        # level (i.e., all completed trials), or even global parent pools at
+        # all levels.
         orig_pool_size = self.bracket_manager.size_of_current_rung(bracket_id)
         pool_size = orig_pool_size
         global_pool = None
@@ -460,7 +479,7 @@ class DifferentialEvolutionHyperbandScheduler(ResourceLevelsScheduler):
             global_pool = self._global_parent_pool[level]
             pool_size += len(global_pool)
             # If this is still too small, we add parent pools of other levels
-            for _, other_level in self.bracket_manager.bracket_rungs[0]:
+            for _, other_level in reversed(self.bracket_manager.bracket_rungs[0]):
                 if pool_size >= 3:
                     break
                 if other_level != level:
@@ -470,7 +489,7 @@ class DifferentialEvolutionHyperbandScheduler(ResourceLevelsScheduler):
             # TODO: If this happens, have to do something else here. For example,
             # could pick trial_id's which are still pending
             assert pool_size >= 3, f"Cannot compose parent pool of size >= 3"
-        # Sample entries from parent pool
+        # Sample 3 entries at random from parent pool
         positions = list(self.random_state.choice(pool_size, 3, replace=False))
         is_base_rung = ext_slot.rung_index == 0
         parent_trial_ids = []
@@ -489,10 +508,13 @@ class DifferentialEvolutionHyperbandScheduler(ResourceLevelsScheduler):
         return self._de_mutation(parent_trial_ids)
 
     def _de_mutation(self, parent_trial_ids: List[int]) -> np.ndarray:
-        ec1 = self._trial_info[parent_trial_ids[0]].encoded_config
-        ec2 = self._trial_info[parent_trial_ids[1]].encoded_config
-        ec3 = self._trial_info[parent_trial_ids[2]].encoded_config
-        mutant = (ec2 - ec3) * self.mutation_factor + ec1
+        """
+        Corresponds to rand/1 mutation strategy of DE.
+        """
+        ec = [
+            self._trial_info[trial_id].encoded_config for trial_id in parent_trial_ids
+        ]
+        mutant = (ec[1] - ec[2]) * self.mutation_factor + ec[0]
         # Entries which violate boundaries are resampled at random
         violations = np.where((mutant > 1) | (mutant < 0))[0]
         if len(violations) > 0:
@@ -520,13 +542,8 @@ class DifferentialEvolutionHyperbandScheduler(ResourceLevelsScheduler):
     ) -> int:
         winner_trial_id = trial_id
         if ext_slot.do_selection:
-            bracket_id = ext_slot.bracket_id
             # Note: This can have changed since crossover
-            target_trial_id = self.bracket_manager.trial_id_from_parent_slot(
-                bracket_id=bracket_id,
-                level=ext_slot.level,
-                slot_index=ext_slot.slot_index,
-            )
+            target_trial_id = self._get_target_trial_id(ext_slot)
             target_metric_val = self._trial_info[target_trial_id].metric_val
             if target_metric_val is not None:
                 # Selection
@@ -537,9 +554,9 @@ class DifferentialEvolutionHyperbandScheduler(ResourceLevelsScheduler):
                 # target has no metric value yet. This should not happen often
                 logger.warning(
                     "Could not do selection because target metric "
-                    f"value still pending (bracket_id = {bracket_id}"
+                    f"value still pending (bracket_id = {ext_slot.bracket_id}"
                     f", trial_id = {trial_id}, "
-                    f"target_trial_id = {target_trial_id}"
+                    f"target_trial_id = {target_trial_id})"
                 )
                 self.num_selection_skipped += 1
         return winner_trial_id
@@ -555,7 +572,8 @@ class DifferentialEvolutionHyperbandScheduler(ResourceLevelsScheduler):
 
         """
         trial_id = trial.trial_id
-        self.searcher.evaluation_failed(str(trial_id))
+        if self.searcher is not None:
+            self.searcher.evaluation_failed(str(trial_id))
         if trial_id in self._trial_to_pending_slot:
             ext_slot = self._trial_to_pending_slot[trial_id]
             self._report_as_failed(ext_slot)
