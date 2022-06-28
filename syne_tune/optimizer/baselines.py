@@ -11,6 +11,7 @@ from syne_tune.optimizer.schedulers.searchers.regularized_evolution import (
 )
 from syne_tune.optimizer.schedulers.synchronous import (
     SynchronousGeometricHyperbandScheduler,
+    GeometricDifferentialEvolutionHyperbandScheduler,
 )
 from syne_tune.optimizer.schedulers.transfer_learning import (
     TransferLearningTaskEvaluations,
@@ -37,6 +38,11 @@ class BayesianOptimization(FIFOScheduler):
         )
 
 
+def _assert_max_resource_args(kwargs: dict, name: str = "max_t"):
+    need_one = {name, "max_resource_attr"}
+    assert need_one.intersection(kwargs.keys()), f"Need one of these: {need_one}"
+
+
 class ASHA(HyperbandScheduler):
     def __init__(self, config_space: Dict, metric: str, resource_attr: str, **kwargs):
         """
@@ -45,8 +51,7 @@ class ASHA(HyperbandScheduler):
         :class:`HyperbandScheduler`.
 
         """
-        need_one = {"max_t", "max_resource_attr"}
-        assert need_one.intersection(kwargs.keys()), f"Need one of these: {need_one}"
+        _assert_max_resource_args()
         super(ASHA, self).__init__(
             config_space=config_space,
             metric=metric,
@@ -64,8 +69,7 @@ class MOBSTER(HyperbandScheduler):
         :class:`HyperbandScheduler`.
 
         """
-        need_one = {"max_t", "max_resource_attr"}
-        assert need_one.intersection(kwargs.keys()), f"Need one of these: {need_one}"
+        _assert_max_resource_args()
         super(MOBSTER, self).__init__(
             config_space=config_space,
             metric=metric,
@@ -82,8 +86,7 @@ class PASHA(HyperbandScheduler):
         latter is more useful, see also :class:`HyperbandScheduler`.
 
         """
-        need_one = {"max_t", "max_resource_attr"}
-        assert need_one.intersection(kwargs.keys()), f"Need one of these: {need_one}"
+        _assert_max_resource_args()
         super(PASHA, self).__init__(
             config_space=config_space,
             metric=metric,
@@ -108,8 +111,7 @@ class SyncHyperband(SynchronousGeometricHyperbandScheduler):
         :class:`HyperbandScheduler`.
 
         """
-        need_one = {"max_resource_level", "max_resource_attr"}
-        assert need_one.intersection(kwargs.keys()), f"Need one of these: {need_one}"
+        _assert_max_resource_args(name="max_resource_level")
         super(SyncHyperband, self).__init__(
             config_space=config_space,
             metric=metric,
@@ -133,12 +135,35 @@ class SyncBOHB(SynchronousGeometricHyperbandScheduler):
         :class:`HyperbandScheduler`.
 
         """
-        need_one = {"max_resource_level", "max_resource_attr"}
-        assert need_one.intersection(kwargs.keys()), f"Need one of these: {need_one}"
+        _assert_max_resource_args(name="max_resource_level")
         super(SyncBOHB, self).__init__(
             config_space=config_space,
             metric=metric,
             searcher="kde",
+            resource_attr=resource_attr,
+            **kwargs,
+        )
+
+
+class DEHB(GeometricDifferentialEvolutionHyperbandScheduler):
+    def __init__(
+        self,
+        config_space: Dict,
+        metric: str,
+        resource_attr: str,
+        **kwargs,
+    ):
+        """
+        One of `max_resource_level`, `max_resource_attr` needs to be in
+        `kwargs`. The latter is more useful, see also
+        :class:`HyperbandScheduler`.
+
+        """
+        _assert_max_resource_args(name="max_resource_level")
+        super(DEHB, self).__init__(
+            config_space=config_space,
+            metric=metric,
+            searcher="random",
             resource_attr=resource_attr,
             **kwargs,
         )
@@ -158,8 +183,7 @@ class SyncMOBSTER(SynchronousGeometricHyperbandScheduler):
         :class:`HyperbandScheduler`.
 
         """
-        need_one = {"max_resource_level", "max_resource_attr"}
-        assert need_one.intersection(kwargs.keys()), f"Need one of these: {need_one}"
+        _assert_max_resource_args(name="max_resource_level")
         super(SyncMOBSTER, self).__init__(
             config_space=config_space,
             metric=metric,
@@ -279,6 +303,7 @@ baselines_dict = {
     "REA": REA,
     "SyncHyperband": SyncHyperband,
     "SyncBOHB": SyncBOHB,
+    "DEHB": DEHB,
     "SyncMOBSTER": SyncMOBSTER,
     "ConstrainedBayesianOptimization": ConstrainedBayesianOptimization,
 }

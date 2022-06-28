@@ -17,6 +17,7 @@ from syne_tune.optimizer.schedulers.hyperband import HyperbandScheduler
 from syne_tune.optimizer.schedulers.fifo import FIFOScheduler
 from syne_tune.optimizer.schedulers.synchronous.hyperband_impl import (
     SynchronousGeometricHyperbandScheduler,
+    GeometricDifferentialEvolutionHyperbandScheduler,
 )
 from syne_tune import Tuner
 from syne_tune import StoppingCriterion
@@ -92,12 +93,16 @@ def test_async_scheduler(scheduler, searcher, mode):
 
 
 _sync_parameterizations = list(
-    itertools.product(["random", "bayesopt"], ["min", "max"])
+    itertools.product(
+        ["hb", "dehb"],
+        ["random", "bayesopt"],
+        ["min", "max"],
+    )
 )
 
 
-@pytest.mark.parametrize("searcher, mode", _sync_parameterizations)
-def test_sync_scheduler(searcher, mode):
+@pytest.mark.parametrize("scheduler, searcher, mode", _sync_parameterizations)
+def test_sync_scheduler(scheduler, searcher, mode):
     max_steps = 5
     num_workers = 2
     random_seed = 382378624
@@ -116,8 +121,7 @@ def test_sync_scheduler(searcher, mode):
 
     search_options = {"debug_log": False, "num_init_random": num_workers}
 
-    myscheduler = SynchronousGeometricHyperbandScheduler(
-        config_space,
+    scheduler_kwargs = dict(
         searcher=searcher,
         search_options=search_options,
         mode=mode,
@@ -126,6 +130,14 @@ def test_sync_scheduler(searcher, mode):
         max_resource_attr="steps",
         random_seed=random_seed,
     )
+    if scheduler == "hb":
+        myscheduler = SynchronousGeometricHyperbandScheduler(
+            config_space, **scheduler_kwargs
+        )
+    else:
+        myscheduler = GeometricDifferentialEvolutionHyperbandScheduler(
+            config_space, **scheduler_kwargs
+        )
 
     stop_criterion = StoppingCriterion(max_wallclock_time=0.2)
     tuner = Tuner(

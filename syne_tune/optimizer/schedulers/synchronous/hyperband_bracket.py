@@ -203,20 +203,20 @@ class SynchronousHyperbandBracket(SynchronousBracket):
     def _promote_trials_at_rung_complete(self):
         pos = self.current_rung
         new_len, milestone = self._rungs[pos]
-        rung, _ = self._rungs[pos - 1]
-        top_list = get_top_list(rung, new_len)
+        previous_rung, _ = self._rungs[pos - 1]
+        top_list = get_top_list(rung=previous_rung, new_len=new_len, mode=self._mode)
         # Set metric_val entries to None, since this distinguishes
         # between a pending and occupied slot
         top_list = [(trial_id, None) for trial_id in top_list]
         self._rungs[pos] = (top_list, milestone)
 
 
-def get_top_list(rung: List[Tuple[int, float]], new_len: int) -> List[int]:
+def get_top_list(rung: List[Tuple[int, float]], new_len: int, mode: str) -> List[int]:
     # Failed trials insert NaN's
     rung_valid = [x for x in rung if not np.isnan(x[1])]
     num_valid = len(rung_valid)
     if num_valid >= new_len:
-        top_list = sorted(rung_valid, key=itemgetter(1), reverse=self._mode == "max")[
+        top_list = sorted(rung_valid, key=itemgetter(1), reverse=mode == "max")[
             :new_len
         ]
     else:

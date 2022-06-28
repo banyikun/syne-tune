@@ -62,11 +62,11 @@ class DifferentialEvolutionHyperbandBracketManager(SynchronousHyperbandBracketMa
         # returned by
         # `DifferentialEvolutionHyperbandBracket.top_list_for_previous_rung`
         # when the current rung is `rung_index` in that bracket. We cache
-        # these so we don't have to repeat sorting many times
+        # these, so we don't have to repeat sorting many times
         self._top_list_of_previous_rung_cache = dict()
         # Maps (offset, level) to (bracket_delta, rung_index) in order to
         # determine the parent rung of a rung in a bracket with offset and
-        # with level (the parent rung has the same level).
+        # level (the parent rung has the same level).
         self._parent_rung = self._set_parent_rung()
 
     def _set_parent_rung(self):
@@ -110,6 +110,7 @@ class DifferentialEvolutionHyperbandBracketManager(SynchronousHyperbandBracketMa
         self._bracket_id_to_offset.append(offset)
         rungs = self._bracket_rungs[offset]
         if bracket_id > 0:
+            # Copy trial_ids from parent rungs
             trial_ids_for_rungs = self._get_trial_ids_from_parent_rungs(
                 bracket_id=bracket_id,
                 rungs=rungs,

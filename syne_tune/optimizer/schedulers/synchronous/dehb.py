@@ -62,7 +62,6 @@ _DEFAULT_OPTIONS = {
     "searcher": "random",
     "mode": "min",
     "resource_attr": "epoch",
-    "searcher_data": "rungs",
     "mutation_factor": 0.5,
     "crossover_probability": 0.5,
 }
@@ -503,15 +502,16 @@ class DifferentialEvolutionHyperbandScheduler(ResourceLevelsScheduler):
         return mutant
 
     def _crossover(self, mutant: np.ndarray, target: np.ndarray) -> np.ndarray:
-        dimensions = self._hp_ranges.ndarray_size
-        cross_points = self.random_state.rand(dimensions) < self.crossover_probability
-        if not np.any(cross_points):
-            cross_points[self.random_state.randint(0, dimensions)] = True
         # For any HP whose encoding has dimension > 1 (e.g., categorical), we
         # make sure not to cross-over inside the encoding
-        for (start, end) in self._hp_ranges.encoded_ranges.values():
-            if end > start + 1:
-                cross_points[(start + 1) : end] = cross_points[start]
+        num_hps = len(self._hp_ranges)
+        hp_mask = self.random_state.rand(num_hps) < self.crossover_probability
+        if not np.any(hp_mask):
+            # Offspring must be different from target
+            hp_mask[self.random_state.randint(0, num_hps)] = True
+        cross_points = np.array(self._hp_ranges.ndarray_size, dtype=bool)
+        for (start, end), val in zip(self._hp_ranges.encoded_ranges.values(), hp_mask):
+            cross_points[start:end] = val
         offspring = np.where(cross_points, mutant, target)
         return offspring
 

@@ -55,10 +55,12 @@ class DifferentialEvolutionHyperbandBracket(SynchronousBracket):
                 next_trial_id += size
         else:
             assert len(rungs) == len(trial_ids_for_rungs), (rungs, trial_ids_for_rungs)
-            for i, (trial_ids, (size, _)) in enumerate(zip(trial_ids_for_rungs, rungs)):
+            for i, (trial_ids, (size, level)) in enumerate(
+                zip(trial_ids_for_rungs, rungs)
+            ):
                 assert (
                     len(trial_ids) == size
-                ), f"{i}: len(trial_ids) = {len(trial_ids)} != {size}"
+                ), f"{i}, level={level}: len(trial_ids) = {len(trial_ids)} != {size}"
         self._rungs = [
             ([(trial_id, None) for trial_id in trial_ids], level)
             for trial_ids, (_, level) in zip(trial_ids_for_rungs, rungs)
@@ -82,14 +84,15 @@ class DifferentialEvolutionHyperbandBracket(SynchronousBracket):
 
     def top_list_for_previous_rung(self) -> List[int]:
         """
-        Returns list of trial_ids correspondind to best scoring entries
+        Returns list of trial_ids corresponding to best scoring entries
         in rung below the currently active one (which must not be the base
         rung). The list is of the size of the current rung.
         """
         assert self.current_rung > 0, "Current rung is base rung"
-        rung, _ = self._rungs[self.current_rung - 1]
-        new_len = len(self._current_rung_and_level()[0])
-        return get_top_list(rung, new_len)
+        previous_rung, _ = self._rungs[self.current_rung - 1]
+        return get_top_list(
+            rung=previous_rung, new_len=self.size_of_current_rung(), mode=self._mode
+        )
 
     def _promote_trials_at_rung_complete(self):
         pass
