@@ -39,6 +39,12 @@ from syne_tune.optimizer.schedulers.searchers.searcher_factory import searcher_f
 from syne_tune.optimizer.schedulers.searchers.bayesopt.datatypes.hp_ranges_factory import (
     make_hyperparameter_ranges,
 )
+from syne_tune.optimizer.schedulers.searchers.bayesopt.tuning_algorithms.common import (
+    ExclusionList,
+)
+from syne_tune.optimizer.schedulers.searchers.bayesopt.utils.debug_log import (
+    DebugLogPrinter,
+)
 
 __all__ = ["DifferentialEvolutionHyperbandScheduler"]
 
@@ -182,6 +188,8 @@ class DifferentialEvolutionHyperbandScheduler(ResourceLevelsScheduler):
         with probability p)
     """
 
+    MAX_RETRIES = 50
+
     def __init__(
         self,
         config_space: dict,
@@ -232,14 +240,17 @@ class DifferentialEvolutionHyperbandScheduler(ResourceLevelsScheduler):
         assert isinstance(
             searcher, str
         ), f"searcher must be of type string, but has type {type(searcher)}"
+        search_options = kwargs.get("search_options")
+        if search_options is None:
+            search_options = dict()
+        else:
+            search_options = search_options.copy()
+        self._debug_log = None
         if searcher == "random_encoded":
             self.searcher = None
+            if search_options.get("debug_log", True):
+                self._debug_log = DebugLogPrinter()
         else:
-            search_options = kwargs.get("search_options")
-            if search_options is None:
-                search_options = dict()
-            else:
-                search_options = search_options.copy()
             search_options.update(
                 {
                     "config_space": self.config_space.copy(),
@@ -262,6 +273,7 @@ class DifferentialEvolutionHyperbandScheduler(ResourceLevelsScheduler):
                 )
                 search_options["max_epochs"] = max_epochs
             self.searcher: BaseSearcher = searcher_factory(searcher, **search_options)
+            self._debug_log = self.searcher.debug_log
         # Bracket manager
         self.bracket_manager = DifferentialEvolutionHyperbandBracketManager(
             rungs_first_bracket=rungs_first_bracket,
@@ -270,6 +282,7 @@ class DifferentialEvolutionHyperbandScheduler(ResourceLevelsScheduler):
         )
         # Needed to convert encoded configs to configs
         self._hp_ranges = make_hyperparameter_ranges(self.config_space)
+        self._excl_list = ExclusionList.empty_list(self._hp_ranges)
         # PRNG for mutation and crossover random draws
         self.random_state = np.random.RandomState(self.random_seed_generator())
         # How often is selection skipped because target still pending?
@@ -287,37 +300,58 @@ class DifferentialEvolutionHyperbandScheduler(ResourceLevelsScheduler):
         self._global_parent_pool = {level: [] for _, level in rungs_first_bracket}
 
     def _suggest(self, trial_id: int) -> Optional[TrialSuggestion]:
-        do_debug_log = self.searcher is not None and self.searcher.debug_log is not None
-        if do_debug_log and trial_id == 0:
-            # This is printed at the start of the experiment. Cannot do this
-            # at construction, because with `RemoteLauncher` this does not end
-            # up in the right log
-            parts = ["Rung systems for each bracket:"] + [
-                f"Bracket {bracket}: {rungs}"
-                for bracket, rungs in enumerate(self.bracket_manager.bracket_rungs)
-            ]
-            logger.info("\n".join(parts))
+        if self._excl_list.config_space_exhausted():
+            logger.warning("All configurations in config space have been suggested")
+            return None
+        if self._debug_log is not None:
+            if trial_id == 0:
+                # This is printed at the start of the experiment. Cannot do this
+                # at construction, because with `RemoteLauncher` this does not end
+                # up in the right log
+                parts = ["Rung systems for each bracket:"] + [
+                    f"Bracket {bracket}: {rungs}"
+                    for bracket, rungs in enumerate(self.bracket_manager.bracket_rungs)
+                ]
+                logger.info("\n".join(parts))
+            if self.searcher is None:
+                self._debug_log.start_get_config("random", trial_id=trial_id)
         # Ask bracket manager for job
         bracket_id, slot_in_rung = self.bracket_manager.next_job()
         ext_slot = ExtendedSlotInRung(bracket_id, slot_in_rung)
         is_base_rung = ext_slot.rung_index == 0  # Slot in base rung?
-        if ext_slot.trial_id == trial_id and is_base_rung:
-            # At the very start, we draw configs from the searcher
-            encoded_config = self._encoded_config_from_searcher(trial_id)
-        elif bracket_id == 0:
-            # First bracket, but not base rung. Promotion as in synchronous
-            # HB, but we assign new trial_id
-            encoded_config = self._encoded_config_by_promotion(ext_slot)
-        else:
-            # Here, we can do DE (mutation, crossover)
-            encoded_config = self._extended_config_by_mutation_crossover(
-                trial_id, ext_slot
-            )
+        encoded_config = None
+        for next_config_iter in range(self.MAX_RETRIES):
+            if next_config_iter < self.MAX_RETRIES / 2:
+                if ext_slot.trial_id == trial_id and is_base_rung:
+                    # At the very start, we draw configs from the searcher
+                    encoded_config = self._encoded_config_from_searcher(trial_id)
+                elif bracket_id == 0:
+                    # First bracket, but not base rung. Promotion as in synchronous
+                    # HB, but we assign new trial_id
+                    encoded_config = self._encoded_config_by_promotion(ext_slot)
+                else:
+                    # Here, we can do DE (mutation, crossover)
+                    encoded_config = self._extended_config_by_mutation_crossover(
+                        trial_id, ext_slot
+                    )
+            else:
+                # Draw encoded config at random
+                restore_searcher = self.searcher
+                self.searcher = None
+                encoded_config = self._encoded_config_from_searcher(trial_id)
+                self.searcher = restore_searcher
+            if encoded_config is None:
+                break  # Searcher failed to return config
+            _config = self._hp_ranges.from_ndarray(encoded_config)
+            if not self._excl_list.contains(_config):
+                break
+            else:
+                encoded_config = None
         if encoded_config is not None:
             suggestion = self._register_new_config_and_make_suggestion(
                 trial_id=trial_id, ext_slot=ext_slot, encoded_config=encoded_config
             )
-            if do_debug_log:
+            if self._debug_log is not None:
                 logger.info(
                     f"trial_id {trial_id} starts (milestone = " f"{ext_slot.level})"
                 )
@@ -336,12 +370,16 @@ class DifferentialEvolutionHyperbandScheduler(ResourceLevelsScheduler):
 
     def _encoded_config_from_searcher(self, trial_id: int) -> np.ndarray:
         if self.searcher is not None:
+            if self._debug_log is not None:
+                logger.info("Draw new config from searcher")
             config = self.searcher.get_config(trial_id=str(trial_id))
             if config is not None:
                 encoded_config = self._hp_ranges.to_ndarray(config)
             else:
                 encoded_config = None
         else:
+            if self._debug_log is not None:
+                logger.info("Draw new encoded config uniformly at random")
             encoded_config = self.random_state.uniform(
                 low=0, high=1, size=self._hp_ranges.ndarray_size
             )
@@ -353,6 +391,11 @@ class DifferentialEvolutionHyperbandScheduler(ResourceLevelsScheduler):
         )
         trial_info = self._trial_info[parent_trial_id]
         assert trial_info.metric_val is not None  # Sanity check
+        if self._debug_log is not None:
+            logger.info(
+                f"Promote config from trial_id {parent_trial_id}"
+                f", level {trial_info.level}"
+            )
         return trial_info.encoded_config
 
     def _extended_config_by_mutation_crossover(
@@ -362,6 +405,8 @@ class DifferentialEvolutionHyperbandScheduler(ResourceLevelsScheduler):
         ext_slot.do_selection = True
         mutant = self._mutation(ext_slot)
         target_trial_id = self._get_target_trial_id(ext_slot)
+        if self._debug_log is not None:
+            logger.info(f"Target (cross-over): trial_id {target_trial_id}")
         return self._crossover(
             mutant=mutant,
             target=self._trial_info[target_trial_id].encoded_config,
@@ -385,9 +430,12 @@ class DifferentialEvolutionHyperbandScheduler(ResourceLevelsScheduler):
             level=ext_slot.level,
         )
         # Return new config
-        config = cast_config_values(
-            self._hp_ranges.from_ndarray(encoded_config), self.config_space
-        )
+        config = self._hp_ranges.from_ndarray(encoded_config)
+        self._excl_list.add(config)  # Should not be suggested again
+        if self.searcher is None:
+            self._debug_log.set_final_config(config)
+            self._debug_log.write_block()
+        config = cast_config_values(config, self.config_space)
         if self.max_resource_attr is not None:
             config = dict(config, **{self.max_resource_attr: ext_slot.level})
         return TrialSuggestion.start_suggestion(config=config)
@@ -412,6 +460,11 @@ class DifferentialEvolutionHyperbandScheduler(ResourceLevelsScheduler):
                     + f"resource = {resource}, but not for {milestone}. "
                     + "Training script must not skip rung levels!"
                 )
+                if self._debug_log is not None:
+                    logger.info(
+                        f"Trial trial_id {trial_id}: Reached milestone "
+                        f"{milestone} with metric {metric_val}"
+                    )
                 self._record_new_metric_value(trial_id, milestone, metric_val)
                 # Selection
                 winner_trial_id = self._selection(trial_id, ext_slot, metric_val)
@@ -492,6 +545,12 @@ class DifferentialEvolutionHyperbandScheduler(ResourceLevelsScheduler):
         # Sample 3 entries at random from parent pool
         positions = list(self.random_state.choice(pool_size, 3, replace=False))
         is_base_rung = ext_slot.rung_index == 0
+        msg = None
+        if self._debug_log is not None:
+            from_str = "top of rung below" if is_base_rung else "parent rung"
+            msg = f"Mutation: Sample parents from {from_str}: pool_size = {pool_size}"
+            if orig_pool_size != pool_size:
+                msg += f", orig_pool_size = {orig_pool_size}"
         parent_trial_ids = []
         for pos in positions:
             if pos >= orig_pool_size:
@@ -505,6 +564,9 @@ class DifferentialEvolutionHyperbandScheduler(ResourceLevelsScheduler):
                     bracket_id=bracket_id, pos=pos
                 )
             parent_trial_ids.append(trial_id)
+        if self._debug_log is not None:
+            msg += "\n" + str(parent_trial_ids)
+            logger.info(msg)
         return self._de_mutation(parent_trial_ids)
 
     def _de_mutation(self, parent_trial_ids: List[int]) -> np.ndarray:
@@ -544,12 +606,19 @@ class DifferentialEvolutionHyperbandScheduler(ResourceLevelsScheduler):
         if ext_slot.do_selection:
             # Note: This can have changed since crossover
             target_trial_id = self._get_target_trial_id(ext_slot)
+            if self._debug_log is not None:
+                logger.info(f"Target (selection): trial_id {target_trial_id}")
             target_metric_val = self._trial_info[target_trial_id].metric_val
             if target_metric_val is not None:
                 # Selection
                 metric_sign = -1 if self.mode == "max" else 1
                 if metric_sign * (metric_val - target_metric_val) >= 0:
                     winner_trial_id = target_trial_id
+                if self._debug_log is not None:
+                    logger.info(
+                        f"Target metric = {target_metric_val}: "
+                        f"winner_trial_id = {winner_trial_id}"
+                    )
             else:
                 # target has no metric value yet. This should not happen often
                 logger.warning(

@@ -35,7 +35,6 @@ _ARGUMENT_KEYS = {"grace_period", "max_resource_level", "reduction_factor", "bra
 _DEFAULT_OPTIONS = {
     "grace_period": 1,
     "reduction_factor": 3,
-    "brackets": 1,
 }
 
 _CONSTRAINTS = {
@@ -64,9 +63,9 @@ class SynchronousGeometricHyperbandScheduler(SynchronousHyperbandScheduler):
         :class:`FIFOScheduler`. Must be positive int larger than
         `grace_period`. If this is not given, it is inferred like in
         :class:`FIFOScheduler`.
-    brackets : int
-        Number of brackets to be used. The value 1 corresponds to successive
-        halving. Is capped to the largest number of supported brackets.
+    brackets : int (optional)
+        Number of brackets to be used. The default is to use the maximum
+        number of brackets per iteration. Pass 1 for successive halving.
 
     """
 
@@ -78,7 +77,7 @@ class SynchronousGeometricHyperbandScheduler(SynchronousHyperbandScheduler):
         )
         self.grace_period = kwargs["grace_period"]
         self.reduction_factor = kwargs["reduction_factor"]
-        num_brackets = kwargs["brackets"]
+        num_brackets = kwargs.get("brackets")
         max_resource_level = self._infer_max_resource_level(
             kwargs.get("max_resource_level"), kwargs.get("max_resource_attr")
         )
@@ -125,12 +124,12 @@ class GeometricDifferentialEvolutionHyperbandScheduler(
     def __init__(self, config_space: Dict, **kwargs):
         TrialScheduler.__init__(self, config_space)
         # Additional parameters to determine rung systems
-        num_brackets_per_iteration = kwargs.get("brackets")
         kwargs = check_and_merge_defaults(
             kwargs, set(), _DEFAULT_OPTIONS, _CONSTRAINTS, dict_name="scheduler_options"
         )
         self.grace_period = kwargs["grace_period"]
         self.reduction_factor = kwargs["reduction_factor"]
+        num_brackets = kwargs.get("brackets")
         max_resource_level = self._infer_max_resource_level(
             kwargs.get("max_resource_level"), kwargs.get("max_resource_attr")
         )
@@ -144,11 +143,11 @@ class GeometricDifferentialEvolutionHyperbandScheduler(
             min_resource=self.grace_period,
             max_resource=max_resource_level,
             reduction_factor=self.reduction_factor,
-            num_brackets=num_brackets_per_iteration,
+            num_brackets=num_brackets,
         )
         rungs_first_bracket = bracket_rungs[0]
         self._create_internal(
             rungs_first_bracket=rungs_first_bracket,
-            num_brackets_per_iteration=num_brackets_per_iteration,
+            num_brackets_per_iteration=num_brackets,
             **filter_by_key(kwargs, _ARGUMENT_KEYS)
         )
