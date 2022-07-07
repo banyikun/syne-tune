@@ -1,9 +1,10 @@
-from argparse import ArgumentParser
 from pathlib import Path
+import itertools
+from tqdm import tqdm
 
 from sagemaker.pytorch import PyTorch
 
-from benchmarking.nursery.benchmark_dehb.baselines import methods, Methods
+from benchmarking.nursery.benchmark_dehb.benchmark_main import parse_args
 from syne_tune.backend.sagemaker_backend.sagemaker_utils import (
     get_execution_role,
 )
@@ -13,22 +14,18 @@ from syne_tune.util import s3_experiment_path, random_string
 
 
 if __name__ == "__main__":
-    parser = ArgumentParser()
-    parser.add_argument(
-        "--experiment_tag",
-        type=str,
-        required=True,
-    )
-    args, _ = parser.parse_known_args()
+    args, method_names, benchmark_names, _ = parse_args()
     experiment_tag = args.experiment_tag
-    hash = random_string(4)
+    suffix = random_string(4)
 
-    for method in methods.keys():
+    combinations = list(itertools.product(method_names, benchmark_names))
+    for method, benchmark_name in tqdm(combinations):
+        name = method + "-" + benchmark_name
         sm_args = dict(
             entry_point="benchmark_main.py",
             source_dir=str(Path(__file__).parent),
             checkpoint_s3_uri=s3_experiment_path(
-                tuner_name=method, experiment_name=experiment_tag
+                tuner_name=name, experiment_name=experiment_tag
             ),
             instance_type="ml.c5.4xlarge",
             instance_count=1,
@@ -40,11 +37,12 @@ if __name__ == "__main__":
             disable_profiler=True,
         )
 
-        print(f"{experiment_tag}-{method}")
+        print(f"{experiment_tag}-{name}")
         sm_args["hyperparameters"] = {
             "experiment_tag": experiment_tag,
-            "num_seeds": 30,
+            "num_seeds": args.num_seeds,
             "method": method,
+            "benchmark": benchmark_name,
         }
         est = PyTorch(**sm_args)
-        est.fit(job_name=f"{experiment_tag}-{method}-{hash}", wait=False)
+        est.fit(job_name=f"{experiment_tag}-{method}-{suffix}", wait=False)

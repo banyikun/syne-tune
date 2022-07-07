@@ -31,9 +31,16 @@ def fcnet_benchmark(dataset_name):
     )
 
 
+NAS201_MAX_WALLCLOCK_TIME = {
+    "cifar10": 5 * 3600,
+    "cifar100": 6 * 3600,
+    "ImageNet16-120": 8 * 3600,
+}
+
+
 def nas201_benchmark(dataset_name):
     return BenchmarkDefinition(
-        max_wallclock_time=3600 * 6,
+        max_wallclock_time=NAS201_MAX_WALLCLOCK_TIME[dataset_name],
         n_workers=4,
         elapsed_time_attr="metric_elapsed_time",
         time_this_resource_attr="metric_runtime",

@@ -25,9 +25,9 @@ class DifferentialEvolutionHyperbandBracket(SynchronousBracket):
     There are a number of differences to brackets in standard synchronous
     Hyperband (:class:`SynchronousHyperbandBracket`):
 
-    * The trial_ids of all rungs are initialized at construction. Either,
-        they are provided, or they are initialized as 0, 1, 2, ... from
-        bottom up. The trial_id fields are never None.
+    * If `init_trial_ids`, the trial_id fields of all rungs are initialized
+        as 0, 1, 2, ... from bottom up. Otherwise, they are None. The former
+        should be done for the first bracket.
     * `on_result`: `result.trial_id` overwrites `trial_id` in rung even if
         latter is not None.
     * Promotions are not triggered automatically when a rung is complete
@@ -38,33 +38,22 @@ class DifferentialEvolutionHyperbandBracket(SynchronousBracket):
         self,
         rungs: List[Tuple[int, int]],
         mode: str,
-        trial_ids_for_rungs: Optional[List[List[int]]] = None,
+        init_trial_ids: bool = False,
     ):
         self.assert_check_rungs(rungs)
         super().__init__(mode)
         # Represents rung levels by (rung, level), where rung is a list of
         # (trial_id, metric_val) tuples for all rungs. The trial_id values
         # are set up front, but are in general overwritten later on
-        if trial_ids_for_rungs is None:
-            trial_ids_for_rungs = []
-            next_trial_id = 0
-            for size, _ in rungs:
-                trial_ids_for_rungs.append(
-                    list(range(next_trial_id, next_trial_id + size))
-                )
+        next_trial_id = 0
+        self._rungs = []
+        for size, level in rungs:
+            if init_trial_ids:
+                trial_ids = list(range(next_trial_id, next_trial_id + size))
                 next_trial_id += size
-        else:
-            assert len(rungs) == len(trial_ids_for_rungs), (rungs, trial_ids_for_rungs)
-            for i, (trial_ids, (size, level)) in enumerate(
-                zip(trial_ids_for_rungs, rungs)
-            ):
-                assert (
-                    len(trial_ids) == size
-                ), f"{i}, level={level}: len(trial_ids) = {len(trial_ids)} != {size}"
-        self._rungs = [
-            ([(trial_id, None) for trial_id in trial_ids], level)
-            for trial_ids, (_, level) in zip(trial_ids_for_rungs, rungs)
-        ]
+            else:
+                trial_ids = [None] * size
+            self._rungs.append(([(trial_id, None) for trial_id in trial_ids], level))
 
     @property
     def num_rungs(self) -> int:
@@ -78,7 +67,7 @@ class DifferentialEvolutionHyperbandBracket(SynchronousBracket):
     def size_of_current_rung(self) -> int:
         return len(self._current_rung_and_level()[0])
 
-    def trial_id_for_slot(self, rung_index: int, slot_index: int) -> int:
+    def trial_id_for_slot(self, rung_index: int, slot_index: int) -> Optional[int]:
         rung, _ = self._rungs[rung_index]
         return rung[slot_index][0]
 

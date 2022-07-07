@@ -91,17 +91,6 @@ class DifferentialEvolutionHyperbandBracketManager(SynchronousHyperbandBracketMa
                     )
         return parent_rung
 
-    def _get_trial_ids_from_parent_rungs(
-        self, bracket_id: int, rungs: List[Tuple[int, int]]
-    ) -> List[List[int]]:
-        return [
-            [
-                self.trial_id_from_parent_slot(bracket_id, level, slot_index)
-                for slot_index in range(size)
-            ]
-            for size, level in rungs
-        ]
-
     def _create_new_bracket(self) -> int:
         # Sanity check:
         assert len(self._brackets) == len(self._bracket_id_to_offset)
@@ -109,19 +98,11 @@ class DifferentialEvolutionHyperbandBracketManager(SynchronousHyperbandBracketMa
         offset = bracket_id % self.num_bracket_offsets
         self._bracket_id_to_offset.append(offset)
         rungs = self._bracket_rungs[offset]
-        if bracket_id > 0:
-            # Copy trial_ids from parent rungs
-            trial_ids_for_rungs = self._get_trial_ids_from_parent_rungs(
-                bracket_id=bracket_id,
-                rungs=rungs,
-            )
-        else:
-            trial_ids_for_rungs = None
         self._brackets.append(
             DifferentialEvolutionHyperbandBracket(
                 rungs=rungs,
                 mode=self.mode,
-                trial_ids_for_rungs=trial_ids_for_rungs,
+                init_trial_ids=bracket_id == 0,
             )
         )
         return bracket_id
@@ -133,18 +114,23 @@ class DifferentialEvolutionHyperbandBracketManager(SynchronousHyperbandBracketMa
         self, bracket_id: int, level: int, slot_index: int
     ) -> int:
         """
-        First determine parent rung (i.e., rung in largest bracket
-        `< bracket_id` which has level `level`, then return trial_id in
-        slot `slot_index`.
+        The parent slot has the same slot index and rung level in the
+        largest bracket `< bracket_id` with a trial_id not None (note
+        that bracket 0 has all trial_ids not None).
+        For a cross-over or selection operation, the target is chosen
+        from the parent slot.
         """
-        assert bracket_id > 0
-        bracket_delta, rung_index = self._parent_rung[
-            (self._bracket_id_to_offset[bracket_id], level)
-        ]
-        parent_bracket = bracket_id - bracket_delta
-        return self._brackets[parent_bracket].trial_id_for_slot(
-            rung_index=rung_index, slot_index=slot_index
-        )
+        trial_id = None
+        while trial_id is None:
+            assert bracket_id > 0
+            bracket_delta, rung_index = self._parent_rung[
+                (self._bracket_id_to_offset[bracket_id], level)
+            ]
+            bracket_id = bracket_id - bracket_delta
+            trial_id = self._brackets[bracket_id].trial_id_for_slot(
+                rung_index=rung_index, slot_index=slot_index
+            )
+        return trial_id
 
     def top_of_previous_rung(self, bracket_id: int, pos: int) -> int:
         """

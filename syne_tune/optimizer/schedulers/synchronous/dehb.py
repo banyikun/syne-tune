@@ -318,17 +318,38 @@ class DifferentialEvolutionHyperbandScheduler(ResourceLevelsScheduler):
         # Ask bracket manager for job
         bracket_id, slot_in_rung = self.bracket_manager.next_job()
         ext_slot = ExtendedSlotInRung(bracket_id, slot_in_rung)
+        if self._debug_log is not None:
+            logger.info(
+                f"trial_id {trial_id} for bracket {bracket_id}, level "
+                f"{slot_in_rung.level}, rung index "
+                + f"{slot_in_rung.rung_index}, slot {slot_in_rung.slot_index}"
+            )
         is_base_rung = ext_slot.rung_index == 0  # Slot in base rung?
         encoded_config = None
+        is_promotion = False
         for next_config_iter in range(self.MAX_RETRIES):
             if next_config_iter < self.MAX_RETRIES / 2:
-                if ext_slot.trial_id == trial_id and is_base_rung:
+                draw_from_searcher = False
+                if is_base_rung:
+                    if bracket_id == 0:
+                        draw_from_searcher = True
+                    else:
+                        parent_trial_id = (
+                            self.bracket_manager.trial_id_from_parent_slot(
+                                bracket_id=bracket_id,
+                                level=ext_slot.level,
+                                slot_index=ext_slot.slot_index,
+                            )
+                        )
+                        draw_from_searcher = parent_trial_id == trial_id
+                if draw_from_searcher:
                     # At the very start, we draw configs from the searcher
                     encoded_config = self._encoded_config_from_searcher(trial_id)
                 elif bracket_id == 0:
                     # First bracket, but not base rung. Promotion as in synchronous
                     # HB, but we assign new trial_id
                     encoded_config = self._encoded_config_by_promotion(ext_slot)
+                    is_promotion = True
                 else:
                     # Here, we can do DE (mutation, crossover)
                     encoded_config = self._extended_config_by_mutation_crossover(
@@ -342,6 +363,8 @@ class DifferentialEvolutionHyperbandScheduler(ResourceLevelsScheduler):
                 self.searcher = restore_searcher
             if encoded_config is None:
                 break  # Searcher failed to return config
+            if is_promotion:
+                break  # Promotion is a config suggested before, that is OK
             _config = self._hp_ranges.from_ndarray(encoded_config)
             if not self._excl_list.contains(_config):
                 break
@@ -401,7 +424,6 @@ class DifferentialEvolutionHyperbandScheduler(ResourceLevelsScheduler):
     def _extended_config_by_mutation_crossover(
         self, trial_id: int, ext_slot: ExtendedSlotInRung
     ) -> np.ndarray:
-        assert trial_id > ext_slot.trial_id  # Sanity check
         ext_slot.do_selection = True
         mutant = self._mutation(ext_slot)
         target_trial_id = self._get_target_trial_id(ext_slot)
@@ -463,7 +485,7 @@ class DifferentialEvolutionHyperbandScheduler(ResourceLevelsScheduler):
                 if self._debug_log is not None:
                     logger.info(
                         f"Trial trial_id {trial_id}: Reached milestone "
-                        f"{milestone} with metric {metric_val}"
+                        f"{milestone} with metric {metric_val:.3f}"
                     )
                 self._record_new_metric_value(trial_id, milestone, metric_val)
                 # Selection
@@ -547,7 +569,7 @@ class DifferentialEvolutionHyperbandScheduler(ResourceLevelsScheduler):
         is_base_rung = ext_slot.rung_index == 0
         msg = None
         if self._debug_log is not None:
-            from_str = "top of rung below" if is_base_rung else "parent rung"
+            from_str = "parent rung" if is_base_rung else "top of rung below"
             msg = f"Mutation: Sample parents from {from_str}: pool_size = {pool_size}"
             if orig_pool_size != pool_size:
                 msg += f", orig_pool_size = {orig_pool_size}"
@@ -593,7 +615,7 @@ class DifferentialEvolutionHyperbandScheduler(ResourceLevelsScheduler):
         if not np.any(hp_mask):
             # Offspring must be different from target
             hp_mask[self.random_state.randint(0, num_hps)] = True
-        cross_points = np.array(self._hp_ranges.ndarray_size, dtype=bool)
+        cross_points = np.empty(self._hp_ranges.ndarray_size, dtype=bool)
         for (start, end), val in zip(self._hp_ranges.encoded_ranges.values(), hp_mask):
             cross_points[start:end] = val
         offspring = np.where(cross_points, mutant, target)
@@ -616,7 +638,7 @@ class DifferentialEvolutionHyperbandScheduler(ResourceLevelsScheduler):
                     winner_trial_id = target_trial_id
                 if self._debug_log is not None:
                     logger.info(
-                        f"Target metric = {target_metric_val}: "
+                        f"Target metric = {target_metric_val:.3f}: "
                         f"winner_trial_id = {winner_trial_id}"
                     )
             else:

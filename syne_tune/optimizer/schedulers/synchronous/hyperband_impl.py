@@ -136,7 +136,9 @@ class GeometricDifferentialEvolutionHyperbandScheduler(
         assert max_resource_level is not None, (
             "The maximum resource level must be specified, either as "
             + "explicit argument 'max_resource_level', or as entry in "
-            + "'config_space', with name 'max_resource_attr'"
+            + "'config_space', with name 'max_resource_attr':\n"
+            + f"max_resource_attr = {kwargs.get('max_resource_attr')}\n"
+            + f"config_space = {config_space}"
         )
         self.max_resource_level = max_resource_level
         bracket_rungs = SynchronousHyperbandRungSystem.geometric(
@@ -149,5 +151,5 @@ class GeometricDifferentialEvolutionHyperbandScheduler(
         self._create_internal(
             rungs_first_bracket=rungs_first_bracket,
             num_brackets_per_iteration=num_brackets,
-            **filter_by_key(kwargs, _ARGUMENT_KEYS)
+            **filter_by_key(kwargs, _ARGUMENT_KEYS),
         )

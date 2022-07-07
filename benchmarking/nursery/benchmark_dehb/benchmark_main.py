@@ -17,7 +17,7 @@ from syne_tune.stopping_criterion import StoppingCriterion
 from syne_tune.tuner import Tuner
 
 
-if __name__ == "__main__":
+def parse_args():
     parser = ArgumentParser()
     parser.add_argument(
         "--experiment_tag",
@@ -35,7 +35,7 @@ if __name__ == "__main__":
         "--run_all_seed",
         type=int,
         default=1,
-        help="if 1 run only `seed=num_seeds`, otherwise runs all the seeds [0, `num_seeds`-1]",
+        help="if 1 run all the seeds [0, `num_seeds`-1], otherwise run seed `num_seeds` only",
     )
     parser.add_argument(
         "--method", type=str, required=False, help="a method to run from baselines.py"
@@ -47,29 +47,31 @@ if __name__ == "__main__":
         help="a benchmark to run from benchmark_definitions.py",
     )
     args, _ = parser.parse_known_args()
-    experiment_tag = args.experiment_tag
-
     if args.run_all_seed == 1:
         seeds = list(range(args.num_seeds))
     else:
         seeds = [args.num_seeds]
-
     method_names = [args.method] if args.method is not None else list(methods.keys())
     benchmark_names = (
         [args.benchmark]
         if args.benchmark is not None
         else list(benchmark_definitions.keys())
     )
+    return args, method_names, benchmark_names, seeds
 
-    # logging.getLogger().setLevel(logging.INFO)
-    logging.getLogger("syne_tune.optimizer.schedulers").setLevel(logging.WARNING)
-    logging.getLogger("syne_tune.backend").setLevel(logging.WARNING)
-    logging.getLogger("syne_tune.backend.simulator_backend.simulator_backend").setLevel(
-        logging.WARNING
-    )
+
+if __name__ == "__main__":
+    args, method_names, benchmark_names, seeds = parse_args()
+    experiment_tag = args.experiment_tag
+
+    logging.getLogger().setLevel(logging.INFO)
+    # logging.getLogger("syne_tune.optimizer.schedulers").setLevel(logging.WARNING)
+    # logging.getLogger("syne_tune.backend").setLevel(logging.WARNING)
+    # logging.getLogger("syne_tune.backend.simulator_backend.simulator_backend").setLevel(
+    #     logging.WARNING
+    # )
 
     combinations = list(itertools.product(method_names, seeds, benchmark_names))
-
     print(combinations)
     for method, seed, benchmark_name in tqdm(combinations):
         np.random.seed(seed)
@@ -89,10 +91,15 @@ if __name__ == "__main__":
 
         resource_attr = next(iter(backend.blackbox.fidelity_space.keys()))
         max_resource_attr = benchmark.max_resource_attr
+        max_resource_level = int(max(backend.blackbox.fidelity_values))
+        config_space = dict(
+            backend.blackbox.configuration_space,
+            **{max_resource_attr: max_resource_level},
+        )
 
         scheduler = methods[method](
             MethodArguments(
-                config_space=backend.blackbox.configuration_space,
+                config_space=config_space,
                 metric=benchmark.metric,
                 mode=benchmark.mode,
                 random_seed=seed,
