@@ -1,5 +1,4 @@
 from pathlib import Path
-import itertools
 from tqdm import tqdm
 
 from sagemaker.pytorch import PyTorch
@@ -15,18 +14,21 @@ from syne_tune.util import s3_experiment_path, random_string
 
 if __name__ == "__main__":
     args, method_names, benchmark_names, _ = parse_args()
+    if len(benchmark_names) == 1:
+        benchmark_name = benchmark_names[0]
+    else:
+        benchmark_name = None
     experiment_tag = args.experiment_tag
     suffix = random_string(4)
 
-    combinations = list(itertools.product(method_names, benchmark_names))
-    for method, benchmark_name in tqdm(combinations):
-        name = method + "-" + benchmark_name
+    for method in tqdm(method_names):
+        checkpoint_s3_uri = s3_experiment_path(
+            tuner_name=method, experiment_name=experiment_tag
+        )
         sm_args = dict(
             entry_point="benchmark_main.py",
             source_dir=str(Path(__file__).parent),
-            checkpoint_s3_uri=s3_experiment_path(
-                tuner_name=name, experiment_name=experiment_tag
-            ),
+            checkpoint_s3_uri=checkpoint_s3_uri,
             instance_type="ml.c5.4xlarge",
             instance_count=1,
             py_version="py38",
@@ -37,12 +39,17 @@ if __name__ == "__main__":
             disable_profiler=True,
         )
 
-        print(f"{experiment_tag}-{name}")
         sm_args["hyperparameters"] = {
             "experiment_tag": experiment_tag,
             "num_seeds": args.num_seeds,
             "method": method,
-            "benchmark": benchmark_name,
         }
+        if benchmark_name is not None:
+            sm_args["hyperparameters"]["benchmark"] = benchmark_name
+        print(
+            f"{experiment_tag}-{method}\n"
+            f"hyperparameters = {sm_args['hyperparameters']}\n"
+            f"Results written to {checkpoint_s3_uri}"
+        )
         est = PyTorch(**sm_args)
         est.fit(job_name=f"{experiment_tag}-{method}-{suffix}", wait=False)

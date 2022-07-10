@@ -454,7 +454,7 @@ class DifferentialEvolutionHyperbandScheduler(ResourceLevelsScheduler):
         # Return new config
         config = self._hp_ranges.from_ndarray(encoded_config)
         self._excl_list.add(config)  # Should not be suggested again
-        if self.searcher is None:
+        if self._debug_log is not None and self.searcher is None:
             self._debug_log.set_final_config(config)
             self._debug_log.write_block()
         config = cast_config_values(config, self.config_space)

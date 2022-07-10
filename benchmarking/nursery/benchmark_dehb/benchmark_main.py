@@ -46,6 +46,12 @@ def parse_args():
         required=False,
         help="a benchmark to run from benchmark_definitions.py",
     )
+    parser.add_argument(
+        "--verbose",
+        type=int,
+        default=0,
+        help="verbose log output?",
+    )
     args, _ = parser.parse_known_args()
     if args.run_all_seed == 1:
         seeds = list(range(args.num_seeds))
@@ -64,12 +70,14 @@ if __name__ == "__main__":
     args, method_names, benchmark_names, seeds = parse_args()
     experiment_tag = args.experiment_tag
 
-    logging.getLogger().setLevel(logging.INFO)
-    # logging.getLogger("syne_tune.optimizer.schedulers").setLevel(logging.WARNING)
-    # logging.getLogger("syne_tune.backend").setLevel(logging.WARNING)
-    # logging.getLogger("syne_tune.backend.simulator_backend.simulator_backend").setLevel(
-    #     logging.WARNING
-    # )
+    if args.verbose:
+        logging.getLogger().setLevel(logging.INFO)
+    else:
+        logging.getLogger("syne_tune.optimizer.schedulers").setLevel(logging.WARNING)
+        logging.getLogger("syne_tune.backend").setLevel(logging.WARNING)
+        logging.getLogger(
+            "syne_tune.backend.simulator_backend.simulator_backend"
+        ).setLevel(logging.WARNING)
 
     combinations = list(itertools.product(method_names, seeds, benchmark_names))
     print(combinations)
@@ -81,16 +89,17 @@ if __name__ == "__main__":
             f"Starting experiment ({method}/{benchmark_name}/{seed}) of {experiment_tag}"
         )
 
+        max_resource_attr = benchmark.max_resource_attr
         backend = BlackboxRepositoryBackend(
             elapsed_time_attr=benchmark.elapsed_time_attr,
             time_this_resource_attr=benchmark.time_this_resource_attr,
+            max_resource_attr=max_resource_attr,
             blackbox_name=benchmark.blackbox_name,
             dataset=benchmark.dataset_name,
             surrogate=benchmark.surrogate,
         )
 
         resource_attr = next(iter(backend.blackbox.fidelity_space.keys()))
-        max_resource_attr = benchmark.max_resource_attr
         max_resource_level = int(max(backend.blackbox.fidelity_values))
         config_space = dict(
             backend.blackbox.configuration_space,
@@ -105,6 +114,7 @@ if __name__ == "__main__":
                 random_seed=seed,
                 max_resource_attr=max_resource_attr,
                 resource_attr=resource_attr,
+                verbose=args.verbose,
             )
         )
 

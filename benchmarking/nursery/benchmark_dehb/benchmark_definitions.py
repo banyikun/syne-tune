@@ -38,10 +38,17 @@ NAS201_MAX_WALLCLOCK_TIME = {
 }
 
 
+NAS201_N_WORKERS = {
+    "cifar10": 4,
+    "cifar100": 4,
+    "ImageNet16-120": 8,
+}
+
+
 def nas201_benchmark(dataset_name):
     return BenchmarkDefinition(
         max_wallclock_time=NAS201_MAX_WALLCLOCK_TIME[dataset_name],
-        n_workers=4,
+        n_workers=NAS201_N_WORKERS[dataset_name],
         elapsed_time_attr="metric_elapsed_time",
         time_this_resource_attr="metric_runtime",
         metric="metric_valid_error",
