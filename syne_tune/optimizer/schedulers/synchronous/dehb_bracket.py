@@ -25,9 +25,6 @@ class DifferentialEvolutionHyperbandBracket(SynchronousBracket):
     There are a number of differences to brackets in standard synchronous
     Hyperband (:class:`SynchronousHyperbandBracket`):
 
-    * If `init_trial_ids`, the trial_id fields of all rungs are initialized
-        as 0, 1, 2, ... from bottom up. Otherwise, they are None. The former
-        should be done for the first bracket.
     * `on_result`: `result.trial_id` overwrites `trial_id` in rung even if
         latter is not None.
     * Promotions are not triggered automatically when a rung is complete
@@ -38,7 +35,6 @@ class DifferentialEvolutionHyperbandBracket(SynchronousBracket):
         self,
         rungs: List[Tuple[int, int]],
         mode: str,
-        init_trial_ids: bool = False,
     ):
         self.assert_check_rungs(rungs)
         super().__init__(mode)
@@ -46,14 +42,7 @@ class DifferentialEvolutionHyperbandBracket(SynchronousBracket):
         # (trial_id, metric_val) tuples for all rungs. The trial_id values
         # are set up front, but are in general overwritten later on
         next_trial_id = 0
-        self._rungs = []
-        for size, level in rungs:
-            if init_trial_ids:
-                trial_ids = list(range(next_trial_id, next_trial_id + size))
-                next_trial_id += size
-            else:
-                trial_ids = [None] * size
-            self._rungs.append(([(trial_id, None) for trial_id in trial_ids], level))
+        self._rungs = [([(None, None)] * size, level) for size, level in rungs]
 
     @property
     def num_rungs(self) -> int:

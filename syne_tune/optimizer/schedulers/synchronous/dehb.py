@@ -32,6 +32,7 @@ from syne_tune.optimizer.schedulers.searchers.utils.default_arguments import (
     assert_no_invalid_options,
     Integer,
     Float,
+    Boolean,
 )
 from syne_tune.optimizer.schedulers.random_seeds import RandomSeedGenerator
 from syne_tune.optimizer.schedulers.searchers.searcher import BaseSearcher
@@ -62,6 +63,7 @@ _ARGUMENT_KEYS = {
     "resource_attr",
     "mutation_factor",
     "crossover_probability",
+    "support_pause_resume",
 }
 
 _DEFAULT_OPTIONS = {
@@ -70,6 +72,7 @@ _DEFAULT_OPTIONS = {
     "resource_attr": "epoch",
     "mutation_factor": 0.5,
     "crossover_probability": 0.5,
+    "support_pause_resume": True,
 }
 
 _CONSTRAINTS = {
@@ -80,6 +83,7 @@ _CONSTRAINTS = {
     "resource_attr": String(),
     "mutation_factor": Float(lower=0, upper=1),
     "crossover_probability": Float(lower=0, upper=1),
+    "support_pause_resume": Boolean(),
 }
 
 
@@ -186,6 +190,11 @@ class DifferentialEvolutionHyperbandScheduler(ResourceLevelsScheduler):
     crossover_probability : float, in (0, 1)
         Probability p used in crossover operation (child entries are chosen
         with probability p)
+    support_pause_resume : bool
+        If True, `_suggest` supports pause and resume in the first bracket. If
+        the objective supports checkpointing, this is made use of.
+        Note: The resumed trial still gets assigned a new trial_id, but it
+        starts from the earlier checkpoint.
     """
 
     MAX_RETRIES = 50
@@ -229,6 +238,7 @@ class DifferentialEvolutionHyperbandScheduler(ResourceLevelsScheduler):
         self._resource_attr = kwargs["resource_attr"]
         self.mutation_factor = kwargs["mutation_factor"]
         self.crossover_probability = kwargs["crossover_probability"]
+        self._support_pause_resume = kwargs["support_pause_resume"]
         # Generator for random seeds
         random_seed = kwargs.get("random_seed")
         if random_seed is None:
@@ -326,7 +336,7 @@ class DifferentialEvolutionHyperbandScheduler(ResourceLevelsScheduler):
             )
         is_base_rung = ext_slot.rung_index == 0  # Slot in base rung?
         encoded_config = None
-        is_promotion = False
+        promoted_from_trial_id = None
         for next_config_iter in range(self.MAX_RETRIES):
             if next_config_iter < self.MAX_RETRIES / 2:
                 draw_from_searcher = False
@@ -341,15 +351,17 @@ class DifferentialEvolutionHyperbandScheduler(ResourceLevelsScheduler):
                                 slot_index=ext_slot.slot_index,
                             )
                         )
-                        draw_from_searcher = parent_trial_id == trial_id
+                        draw_from_searcher = parent_trial_id is None
                 if draw_from_searcher:
                     # At the very start, we draw configs from the searcher
                     encoded_config = self._encoded_config_from_searcher(trial_id)
                 elif bracket_id == 0:
                     # First bracket, but not base rung. Promotion as in synchronous
                     # HB, but we assign new trial_id
-                    encoded_config = self._encoded_config_by_promotion(ext_slot)
-                    is_promotion = True
+                    (
+                        encoded_config,
+                        promoted_from_trial_id,
+                    ) = self._encoded_config_by_promotion(ext_slot)
                 else:
                     # Here, we can do DE (mutation, crossover)
                     encoded_config = self._extended_config_by_mutation_crossover(
@@ -363,7 +375,7 @@ class DifferentialEvolutionHyperbandScheduler(ResourceLevelsScheduler):
                 self.searcher = restore_searcher
             if encoded_config is None:
                 break  # Searcher failed to return config
-            if is_promotion:
+            if promoted_from_trial_id is not None:
                 break  # Promotion is a config suggested before, that is OK
             _config = self._hp_ranges.from_ndarray(encoded_config)
             if not self._excl_list.contains(_config):
@@ -371,13 +383,23 @@ class DifferentialEvolutionHyperbandScheduler(ResourceLevelsScheduler):
             else:
                 encoded_config = None
         if encoded_config is not None:
-            suggestion = self._register_new_config_and_make_suggestion(
-                trial_id=trial_id, ext_slot=ext_slot, encoded_config=encoded_config
-            )
-            if self._debug_log is not None:
-                logger.info(
-                    f"trial_id {trial_id} starts (milestone = " f"{ext_slot.level})"
+            if self._support_pause_resume and promoted_from_trial_id is not None:
+                suggestion = self._promote_trial_and_make_suggestion(
+                    trial_id=promoted_from_trial_id, ext_slot=ext_slot
                 )
+                if self._debug_log is not None:
+                    logger.info(
+                        f"trial_id {promoted_from_trial_id} resumes (milestone = "
+                        f"{ext_slot.level})"
+                    )
+            else:
+                suggestion = self._register_new_config_and_make_suggestion(
+                    trial_id=trial_id, ext_slot=ext_slot, encoded_config=encoded_config
+                )
+                if self._debug_log is not None:
+                    logger.info(
+                        f"trial_id {trial_id} starts (milestone = {ext_slot.level})"
+                    )
         else:
             # Searcher failed to return a config for a new trial_id. We report
             # the corresponding job as failed, so that in case the experiment
@@ -408,7 +430,9 @@ class DifferentialEvolutionHyperbandScheduler(ResourceLevelsScheduler):
             )
         return encoded_config
 
-    def _encoded_config_by_promotion(self, ext_slot: ExtendedSlotInRung) -> np.ndarray:
+    def _encoded_config_by_promotion(
+        self, ext_slot: ExtendedSlotInRung
+    ) -> (np.ndarray, int):
         parent_trial_id = self.bracket_manager.top_of_previous_rung(
             bracket_id=ext_slot.bracket_id, pos=ext_slot.slot_index
         )
@@ -419,7 +443,7 @@ class DifferentialEvolutionHyperbandScheduler(ResourceLevelsScheduler):
                 f"Promote config from trial_id {parent_trial_id}"
                 f", level {trial_info.level}"
             )
-        return trial_info.encoded_config
+        return trial_info.encoded_config, parent_trial_id
 
     def _extended_config_by_mutation_crossover(
         self, trial_id: int, ext_slot: ExtendedSlotInRung
@@ -434,12 +458,22 @@ class DifferentialEvolutionHyperbandScheduler(ResourceLevelsScheduler):
             target=self._trial_info[target_trial_id].encoded_config,
         )
 
-    def _get_target_trial_id(self, ext_slot: ExtendedSlotInRung) -> int:
-        return self.bracket_manager.trial_id_from_parent_slot(
+    def _draw_random_trial_id(self) -> int:
+        return self.random_state.choice(self._trial_info.keys())
+
+    def _get_target_trial_id(self, ext_slot: ExtendedSlotInRung) -> Optional[int]:
+        """
+        The target trial_id is the trial_id in the parent slot. If this is None,
+        a random existing trial_id is returned.
+        """
+        target_trial_id = self.bracket_manager.trial_id_from_parent_slot(
             bracket_id=ext_slot.bracket_id,
             level=ext_slot.level,
             slot_index=ext_slot.slot_index,
         )
+        if target_trial_id is None:
+            target_trial_id = self._draw_random_trial_id()
+        return target_trial_id
 
     def _register_new_config_and_make_suggestion(
         self, trial_id: int, ext_slot: ExtendedSlotInRung, encoded_config: np.ndarray
@@ -461,6 +495,28 @@ class DifferentialEvolutionHyperbandScheduler(ResourceLevelsScheduler):
         if self.max_resource_attr is not None:
             config = dict(config, **{self.max_resource_attr: ext_slot.level})
         return TrialSuggestion.start_suggestion(config=config)
+
+    def _promote_trial_and_make_suggestion(
+        self, trial_id: int, ext_slot: ExtendedSlotInRung
+    ) -> TrialSuggestion:
+        # Register as pending
+        self._trial_to_pending_slot[trial_id] = ext_slot
+        # Modify entry to new milestone level
+        trial_info = self._trial_info.get(trial_id)
+        assert (
+            trial_info is not None
+        ), f"Cannot promote trial_id {trial_id}, which is not registered"
+        trial_info.level = ext_slot.level
+        trial_info.metric_val = None
+        if self.max_resource_attr is None:
+            config = None
+        else:
+            config = cast_config_values(
+                self._hp_ranges.from_ndarray(trial_info.encoded_config),
+                self.config_space,
+            )
+            config = dict(config, **{self.max_resource_attr: ext_slot.level})
+        return TrialSuggestion.resume_suggestion(trial_id=trial_id, config=config)
 
     def _report_as_failed(self, ext_slot: ExtendedSlotInRung):
         result_failed = ext_slot.slot_in_rung()
@@ -492,7 +548,10 @@ class DifferentialEvolutionHyperbandScheduler(ResourceLevelsScheduler):
                 winner_trial_id = self._selection(trial_id, ext_slot, metric_val)
                 # Return updated slot information to bracket
                 self._return_slot_result_to_bracket(winner_trial_id, ext_slot)
-                trial_decision = SchedulerDecision.STOP
+                if self._support_pause_resume and ext_slot.bracket_id == 0:
+                    trial_decision = SchedulerDecision.PAUSE
+                else:
+                    trial_decision = SchedulerDecision.STOP
                 if call_searcher and self.searcher is not None:
                     config = self._hp_ranges.from_ndarray(
                         self._trial_info[trial_id].encoded_config
@@ -581,6 +640,8 @@ class DifferentialEvolutionHyperbandScheduler(ResourceLevelsScheduler):
                 trial_id = self.bracket_manager.trial_id_from_parent_slot(
                     bracket_id=bracket_id, level=level, slot_index=pos
                 )
+                if trial_id is None:
+                    trial_id = self._draw_random_trial_id()
             else:
                 trial_id = self.bracket_manager.top_of_previous_rung(
                     bracket_id=bracket_id, pos=pos

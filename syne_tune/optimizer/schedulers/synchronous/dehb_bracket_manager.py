@@ -99,11 +99,7 @@ class DifferentialEvolutionHyperbandBracketManager(SynchronousHyperbandBracketMa
         self._bracket_id_to_offset.append(offset)
         rungs = self._bracket_rungs[offset]
         self._brackets.append(
-            DifferentialEvolutionHyperbandBracket(
-                rungs=rungs,
-                mode=self.mode,
-                init_trial_ids=bracket_id == 0,
-            )
+            DifferentialEvolutionHyperbandBracket(rungs=rungs, mode=self.mode)
         )
         return bracket_id
 
@@ -112,17 +108,16 @@ class DifferentialEvolutionHyperbandBracketManager(SynchronousHyperbandBracketMa
 
     def trial_id_from_parent_slot(
         self, bracket_id: int, level: int, slot_index: int
-    ) -> int:
+    ) -> Optional[int]:
         """
         The parent slot has the same slot index and rung level in the
-        largest bracket `< bracket_id` with a trial_id not None (note
-        that bracket 0 has all trial_ids not None).
+        largest bracket `< bracket_id` with a trial_id not None. If no
+        such slot exists, None is returned.
         For a cross-over or selection operation, the target is chosen
         from the parent slot.
         """
         trial_id = None
-        while trial_id is None:
-            assert bracket_id > 0
+        while trial_id is None and bracket_id > 0:
             bracket_delta, rung_index = self._parent_rung[
                 (self._bracket_id_to_offset[bracket_id], level)
             ]

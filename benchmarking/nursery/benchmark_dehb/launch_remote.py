@@ -53,3 +53,11 @@ if __name__ == "__main__":
         )
         est = PyTorch(**sm_args)
         est.fit(job_name=f"{experiment_tag}-{method}-{suffix}", wait=False)
+
+    print(
+        "\nLaunched all requested experiments. Once everything is done, use this "
+        "command to sync result files from S3:\n"
+        f"$ aws s3 sync {s3_experiment_path(experiment_name=experiment_tag)}/ "
+        f'~/syne-tune/{experiment_tag}/ --exclude "*" '
+        '--include "*metadata.json" --include "*results.csv.zip"'
+    )
