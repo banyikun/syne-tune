@@ -459,7 +459,7 @@ class DifferentialEvolutionHyperbandScheduler(ResourceLevelsScheduler):
         )
 
     def _draw_random_trial_id(self) -> int:
-        return self.random_state.choice(self._trial_info.keys())
+        return self.random_state.choice(list(self._trial_info.keys()))
 
     def _get_target_trial_id(self, ext_slot: ExtendedSlotInRung) -> Optional[int]:
         """
